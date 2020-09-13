@@ -38,14 +38,14 @@ class Rollout
   end
 
   def delete(feature)
-    features = (@storage.get(features_key) || '').split(',')
-    features.delete(feature.to_s)
-    @storage.set(features_key, features.join(','))
-    @storage.del(key(feature))
-
-    if respond_to?(:logging)
-      logging.delete(feature)
+    @storage.with do |_conn|
+      features = (conn.get(features_key) || '').split(',')
+      features.delete(feature.to_s)
+      conn.set(features_key, features.join(','))
+      conn.del(key(feature))
     end
+
+    logging.delete(feature) if respond_to?(:logging)
   end
 
   def set(feature, desired_state)
@@ -137,7 +137,7 @@ class Rollout
   end
 
   def get(feature)
-    string = @storage.get(key(feature))
+    string = @storage.with { |conn| conn.get(key(feature)) }
     Feature.new(feature, string, @options)
   end
 
@@ -157,11 +157,13 @@ class Rollout
     return [] if features.empty?
 
     feature_keys = features.map { |feature| key(feature) }
-    @storage.mget(*feature_keys).map.with_index { |string, index| Feature.new(features[index], string, @options) }
+    @storage.with do |conn|
+      conn.mget(*feature_keys).map.with_index { |string, index| Feature.new(features[index], string, @options) }
+    end
   end
 
   def features
-    (@storage.get(features_key) || '').split(',').map(&:to_sym)
+    (@storage.with { |conn| conn.get(features_key) } || '').split(',').map(&:to_sym)
   end
 
   def feature_states(user = nil)
@@ -177,21 +179,25 @@ class Rollout
   end
 
   def clear!
-    features.each do |feature|
-      with_feature(feature, &:clear)
-      @storage.del(key(feature))
-    end
+    @storage.with do |conn|
+      features.each do |feature|
+        with_feature(feature, &:clear)
+        conn.del(key(feature))
+      end
 
-    @storage.del(features_key)
+      conn.del(features_key)
+    end
   end
 
   def exists?(feature)
-    # since redis-rb v4.2, `#exists?` replaces `#exists` which now returns integer value instead of boolean
-    # https://github.com/redis/redis-rb/pull/918
-    if @storage.respond_to?(:exists?)
-      @storage.exists?(key(feature))
-    else
-      @storage.exists(key(feature))
+    @storage.with do |conn|
+      # since redis-rb v4.2, `#exists?` replaces `#exists` which now returns integer value instead of boolean
+      # https://github.com/redis/redis-rb/pull/918
+      if conn.respond_to?(:exists?)
+        conn.exists?(key(feature))
+      else
+        conn.exists(key(feature))
+      end
     end
   end
 
@@ -221,7 +227,9 @@ class Rollout
   end
 
   def save(feature)
-    @storage.set(key(feature.name), feature.serialize)
-    @storage.set(features_key, (features | [feature.name.to_sym]).join(','))
+    @storage.with do |conn|
+      conn.set(key(feature.name), feature.serialize)
+      conn.set(features_key, (features | [feature.name.to_sym]).join(','))
+    end
   end
 end

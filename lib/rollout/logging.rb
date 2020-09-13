@@ -60,34 +60,34 @@ class Rollout
 
       def updated_at(feature_name)
         storage_key = events_storage_key(feature_name)
-        _, score = @storage.zrange(storage_key, 0, 0, with_scores: true).first
+        _, score = @storage.with { |conn| conn.zrange(storage_key, 0, 0, with_scores: true) }.first
         Time.at(-score.to_f / 1_000_000) if score
       end
 
       def last_event(feature_name)
         storage_key = events_storage_key(feature_name)
-        value = @storage.zrange(storage_key, 0, 0, with_scores: true).first
+        value = @storage.with { |_conn| zrange(storage_key, 0, 0, with_scores: true) }.first
         Event.from_raw(*value) if value
       end
 
       def events(feature_name)
         storage_key = events_storage_key(feature_name)
         @storage
-          .zrange(storage_key, 0, -1, with_scores: true)
+          .with { |conn| conn.zrange(storage_key, 0, -1, with_scores: true) }
           .map { |v| Event.from_raw(*v) }
           .reverse
       end
 
       def global_events
         @storage
-          .zrange(global_events_storage_key, 0, -1, with_scores: true)
+          .with { |conn| conn.zrange(global_events_storage_key, 0, -1, with_scores: true) }
           .map { |v| Event.from_raw(*v) }
           .reverse
       end
 
       def delete(feature_name)
         storage_key = events_storage_key(feature_name)
-        @storage.del(storage_key)
+        @storage.with { |conn| conn.del(storage_key) }
       end
 
       def update(before, after)
@@ -125,21 +125,21 @@ class Rollout
 
         storage_key = events_storage_key(after.name)
 
-        @storage.zadd(storage_key, -event.timestamp, event.serialize)
-        @storage.zremrangebyrank(storage_key, @history_length, -1)
+        @storage.with do |conn|
+          conn.zadd(storage_key, -event.timestamp, event.serialize)
+          conn.zremrangebyrank(storage_key, @history_length, -1)
 
-        if @global
-          @storage.zadd(global_events_storage_key, -event.timestamp, event.serialize)
-          @storage.zremrangebyrank(global_events_storage_key, @history_length, -1)
+          if @global
+            conn.zadd(global_events_storage_key, -event.timestamp, event.serialize)
+            conn.zremrangebyrank(global_events_storage_key, @history_length, -1)
+          end
         end
       end
 
       def log(event, *args)
         return unless logging_enabled?
 
-        unless respond_to?(event)
-          raise ArgumentError, "Invalid log event: #{event}"
-        end
+        raise ArgumentError, "Invalid log event: #{event}" unless respond_to?(event)
 
         expected_arity = method(event).arity
         unless args.count == expected_arity
@@ -156,8 +156,8 @@ class Rollout
       WITHOUT_THREAD_KEY = :rollout_logging_disabled
 
       def with_context(context)
-        raise ArgumentError, "context must be a Hash" unless context.is_a?(Hash)
-        raise ArgumentError, "block is required" unless block_given?
+        raise ArgumentError, 'context must be a Hash' unless context.is_a?(Hash)
+        raise ArgumentError, 'block is required' unless block_given?
 
         Thread.current[CONTEXT_THREAD_KEY] = context
         yield
@@ -183,7 +183,7 @@ class Rollout
       private
 
       def global_events_storage_key
-        "feature:_global_:logging:events"
+        'feature:_global_:logging:events'
       end
 
       def events_storage_key(feature_name)
